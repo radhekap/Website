@@ -1,12 +1,184 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-<title>Page Tile</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Background Remover — Local (BodyPix)</title>
+  <style>
+    :root{
+      --bg:#0f1724; --card:#0b1220; --accent:#7dd3fc; --muted:#94a3b8; --glass: rgba(255,255,255,0.03);
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    body{
+      margin:0; min-height:100vh; background:linear-gradient(180deg,#071029 0%,#07162a 60%);
+      color:#e6eef8; display:flex; align-items:center; justify-content:center; padding:28px;
+    }
+    .app{
+      width:980px; max-width:96%; background:var(--card); border-radius:14px; padding:18px; box-shadow: 0 6px 30px rgba(2,6,23,0.6);
+      display:grid; grid-template-columns: 380px 1fr; gap:16px;
+    }
+    h1{margin:0 0 8px 0; font-size:18px}
+    .sidebar{ background:var(--glass); padding:12px; border-radius:10px; min-height:420px; display:flex; flex-direction:column; gap:10px;}
+    .controls{display:flex; flex-direction:column; gap:8px}
+    label{font-size:13px; color:var(--muted)}
+    input[type=range]{width:100%}
+    button{
+      background:linear-gradient(90deg,var(--accent), #60a5fa); border:0; padding:8px 12px; border-radius:8px; color:#002036; font-weight:600; cursor:pointer;
+      box-shadow: 0 6px 18px rgba(125,211,252,.12);
+    }
+    .preview{
+      padding:12px; border-radius:10px; background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      display:flex; flex-direction:column; gap:8px; align-items:center; justify-content:center;
+    }
+    canvas{max-width:100%; border-radius:8px; background:transparent}
+    .row{display:flex; gap:8px; align-items:center}
+    .muted{color:var(--muted); font-size:13px}
+    .small{font-size:12px}
+    .footer{display:flex; gap:8px; margin-top:8px; align-items:center}
+    .fileinput{display:block; padding:8px; border-radius:8px; background:rgba(255,255,255,0.02); color:inherit; cursor:pointer}
+    .option{display:flex; gap:8px; align-items:center}
+    select{padding:6px 8px; border-radius:8px; background:rgba(0,0,0,0.2); color:inherit; border:1px solid rgba(255,255,255,0.03)}
+  </style>
 </head>
 <body>
+  <div class="app" role="main">
+    <div class="sidebar" aria-label="controls">
+      <div>
+        <h1>Background Remover</h1>
+        <div class="muted small">Local, runs in your browser. No uploads to server.</div>
+      </div>
 
-<h1>This is a Heading</h1>
-<button onclick="document.location='pg1.html'">Hi</button>
+      <div class="controls">
+        <label class="small">Select image</label>
+        <input id="file" class="fileinput" type="file" accept="image/*">
 
-</body>
-</html>
+        <div class="row">
+          <div style="flex:1">
+            <label class="small">Model type</label>
+            <select id="modelType" title="Model complexity">
+              <option value="mobile">MobileNet (fast)</option>
+              <option value="resnet">ResNet (higher quality, slower)</option>
+            </select>
+          </div>
+          <div style="width:120px">
+            <label class="small">Output</label>
+            <select id="outputMode" title="Output mode">
+              <option value="transparent">Transparent PNG</option>
+              <option value="color">Replace background color</option>
+              <option value="blur">Blur background</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label class="small">Segmentation threshold: <span id="thVal">0.5</span></label>
+          <input id="threshold" type="range" min="0" max="1" step="0.01" value="0.5">
+        </div>
+
+        <div id="colorPickerRow" style="display:none">
+          <label class="small">Background color</label>
+          <input id="bgColor" type="color" value="#ffffff" style="width:100%; padding:6px; border-radius:6px;">
+        </div>
+
+        <div id="blurRow" style="display:none">
+          <label class="small">Blur radius (px)</label>
+          <input id="blurRadius" type="range" min="1" max="60" step="1" value="10">
+          <div class="muted small">Higher = more blur.</div>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-top:6px">
+          <button id="run">Remove Background</button>
+          <button id="download" disabled>Download PNG</button>
+        </div>
+
+        <div class="muted small footer">
+          <div id="status">Model not loaded.</div>
+        </div>
+      </div>
+
+      <div class="muted small" style="margin-top:auto">
+        Tip: For best results use photos with a single person/object and clear foreground/background contrast. Resize large images before processing if your device is low-memory.
+      </div>
+    </div>
+
+    <div class="preview" aria-label="preview area">
+      <div class="muted small">Preview (result will appear below)</div>
+      <canvas id="resultCanvas" width="640" height="480"></canvas>
+      <div class="muted small row" style="width:100%; justify-content:space-between">
+        <div id="inputInfo">No image loaded</div>
+        <div id="timing"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Load TensorFlow.js and BodyPix from CDN -->
+  <script src="https://unpkg.com/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+  <script src="https://unpkg.com/@tensorflow-models/body-pix@2.0.5/dist/body-pix.min.js"></script>
+
+  <script>
+    // Elements
+    const fileEl = document.getElementById('file');
+    const runBtn = document.getElementById('run');
+    const downloadBtn = document.getElementById('download');
+    const status = document.getElementById('status');
+    const canvas = document.getElementById('resultCanvas');
+    const ctx = canvas.getContext('2d', {alpha: true});
+    const thresholdEl = document.getElementById('threshold');
+    const thVal = document.getElementById('thVal');
+    const modelType = document.getElementById('modelType');
+    const outputMode = document.getElementById('outputMode');
+    const bgColorInput = document.getElementById('bgColor');
+    const colorPickerRow = document.getElementById('colorPickerRow');
+    const blurRow = document.getElementById('blurRow');
+    const blurRadius = document.getElementById('blurRadius');
+    const inputInfo = document.getElementById('inputInfo');
+    const timing = document.getElementById('timing');
+
+    let net = null;
+    let img = new Image();
+    let lastResultBlob = null;
+
+    // Update UI on mode change
+    outputMode.addEventListener('change', () => {
+      colorPickerRow.style.display = outputMode.value === 'color' ? 'block' : 'none';
+      blurRow.style.display = outputMode.value === 'blur' ? 'block' : 'none';
+    });
+
+    thresholdEl.addEventListener('input', () => { thVal.textContent = thresholdEl.value; });
+
+    // Load model on startup
+    async function loadModel() {
+      status.textContent = 'Loading model...';
+      const architecture = modelType.value === 'resnet' ? 'ResNet50' : 'MobileNetV1';
+      try {
+        net = await bodyPix.load({
+          architecture: architecture,
+          outputStride: modelType.value === 'resnet' ? 16 : 16,
+          multiplier: modelType.value === 'resnet' ? 1.0 : 0.75,
+          quantBytes: 2
+        });
+        status.textContent = 'Model loaded (' + architecture + ').';
+      } catch (e) {
+        console.error(e);
+        status.textContent = 'Model failed to load: ' + e.message;
+      }
+    }
+
+    // Allow switching model type (reload)
+    modelType.addEventListener('change', async () => {
+      net = null;
+      await tf.nextFrame();
+      await loadModel();
+    });
+
+    // File input
+    fileEl.addEventListener('change', (ev) => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      const url = URL.createObjectURL(f);
+      img = new Image();
+      img.onload = () => {
+        // Resize canvas to image aspect ratio, max width 1200 for performance
+        const maxW = 1200;
+        let w = img.width, h = img.height;
+        if (w > maxW) { h = Math.round(h * (maxW / w));*
